@@ -1,5 +1,6 @@
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import ta
 from config import BIST_TUM_HISSELER
 
@@ -10,11 +11,16 @@ def haftalik_formasyon_tara(sembol: str) -> dict:
     try:
         df_haftalik = yf.download(ticker_str, period="1y", interval="1wk", progress=False, timeout=10)
 
-        if df_haftalik is None or df_haftalik.empty or len(df_haftalik) < 5:
-            return {"basari": False, "mesaj": "Yetersiz haftalik veri."}
+        if df_haftalik is None or df_haftalik.empty:
+            return {"basari": False, "mesaj": "Yetersiz haftalık veri."}
 
         if isinstance(df_haftalik.columns, pd.MultiIndex):
             df_haftalik.columns = df_haftalik.columns.get_level_values(0)
+
+        # Boş ve hatalı satırları temizle
+        df_haftalik = df_haftalik.dropna(subset=['Open', 'High', 'Low', 'Close'])
+        if len(df_haftalik) < 5:
+            return {"basari": False, "mesaj": "Yetersiz haftalık veri."}
 
         bulunan_formasyonlar = []
 
@@ -50,9 +56,6 @@ def haftalik_formasyon_tara(sembol: str) -> dict:
         return {"basari": False, "mesaj": str(e)}
 
 def tum_hisseleri_tara(progress_callback=None) -> list:
-    """
-    Tüm BIST hisselerini tarayarak en son haftasında AL SİNYALİ vermiş hisseleri bulur.
-    """
     bulunanlar = []
     toplam = len(BIST_TUM_HISSELER)
 
@@ -63,11 +66,9 @@ def tum_hisseleri_tara(progress_callback=None) -> list:
         try:
             sonuc = haftalik_formasyon_tara(sembol)
             if sonuc.get("basari") and sonuc.get("formasyonlar"):
-                # Son haftada (veya son 2 haftada) tetiklenmiş mi?
                 son_formasyon = sonuc["formasyonlar"][-1]
                 toplam_mum = len(sonuc["df_haftalik"])
                 
-                # Eğer sinyal son 2 mumdan birindeyse taze sinyaldir
                 if son_formasyon["indeks"] >= toplam_mum - 2:
                     bulunanlar.append({
                         "sembol": sembol,
@@ -87,11 +88,16 @@ def bist_hisse_analiz(sembol: str) -> dict:
     try:
         df = yf.download(ticker_str, period="6mo", interval="1d", progress=False, timeout=10)
         
-        if df is None or df.empty or len(df) < 20:
+        if df is None or df.empty:
             return {"basari": False, "mesaj": f"'{sembol}' için veri bulunamadı."}
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
+
+        # Boş satırları temizle
+        df = df.dropna(subset=['Open', 'High', 'Low', 'Close', 'Volume'])
+        if len(df) < 20:
+            return {"basari": False, "mesaj": f"'{sembol}' için yeterli geçmiş veri yok."}
 
         son_fiyat = float(df['Close'].iloc[-1])
         onceki_kapanis = float(df['Close'].iloc[-2])
@@ -99,9 +105,15 @@ def bist_hisse_analiz(sembol: str) -> dict:
         son_hacim = int(df['Volume'].iloc[-1])
         hacim_20gun_ort = int(df['Volume'].tail(20).mean())
 
-        rsi = ta.momentum.RSIIndicator(close=df['Close'].squeeze(), window=14).rsi().iloc[-1]
-        sma_20 = df['Close'].rolling(window=20).mean().iloc[-1]
-        sma_50 = df['Close'].rolling(window=50).mean().iloc[-1]
+        # İndikatörler
+        close_series = df['Close'].squeeze()
+        rsi_series = ta.momentum.RSIIndicator(close=close_series, window=14).rsi().dropna()
+        rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
+
+        sma_20_series = df['Close'].rolling(window=20).mean().dropna()
+        sma_50_series = df['Close'].rolling(window=50).mean().dropna()
+        sma_20 = float(sma_20_series.iloc[-1]) if not sma_20_series.empty else son_fiyat
+        sma_50 = float(sma_50_series.iloc[-1]) if not sma_50_series.empty else son_fiyat
 
         tarama = haftalik_formasyon_tara(sembol)
 
@@ -121,9 +133,9 @@ def bist_hisse_analiz(sembol: str) -> dict:
             "gunluk_degisim": round(gunluk_degisim, 2),
             "son_hacim": son_hacim,
             "hacim_20_ort": hacim_20gun_ort,
-            "rsi": round(float(rsi), 2),
-            "sma_20": round(float(sma_20), 2),
-            "sma_50": round(float(sma_50), 2),
+            "rsi": round(rsi, 2),
+            "sma_20": round(sma_20, 2),
+            "sma_50": round(sma_50, 2),
             "sinyaller": sinyaller,
             "gecmis_veri": df,
             "haftalik_veri": tarama.get("df_haftalik"),
